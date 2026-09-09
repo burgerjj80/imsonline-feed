@@ -1,0 +1,53 @@
+name: Publish Facebook feed
+
+# Pulls the IMS Online product feed from the storefront and republishes it to
+# GitHub Pages, so Meta/Facebook fetches it from GitHub's CDN instead of the
+# rate-limited origin. Runs on a schedule, on manual dispatch, and on push.
+
+on:
+  schedule:
+    - cron: '15 */4 * * *'   # every 4 hours (staggered off the origin's own regen)
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-feed
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch feed from storefront
+        run: |
+          set -e
+          curl -fSL --retry 5 --retry-delay 15 --retry-all-errors \
+            -A "GitHubActions-IMSFeed/1.0" \
+            https://imsonline.co.za/feed/facebook.xml -o facebook.xml
+          bytes=$(wc -c < facebook.xml)
+          items=$(grep -c '<item>' facebook.xml || true)
+          echo "fetched $bytes bytes, $items items"
+          head -2 facebook.xml
+          # sanity: must be non-trivial XML with items, else fail (don't publish a 429 page)
+          test "$bytes" -gt 100000
+          test "$items" -gt 100
+          grep -q '<rss' facebook.xml
+
+      - name: Publish facebook.xml to gh-pages (single-commit, no history bloat)
+        run: |
+          set -e
+          git init -q
+          git checkout -q -b gh-pages
+          # a tiny landing page + the feed
+          printf '<!doctype html><title>IMS Online feed</title><p>Meta product feed: <a href="facebook.xml">facebook.xml</a></p>' > index.html
+          git add facebook.xml index.html
+          git -c user.name='ims-feed-bot' -c user.email='ims-feed-bot@users.noreply.github.com' \
+            commit -qm "feed $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
